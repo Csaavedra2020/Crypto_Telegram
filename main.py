@@ -6,14 +6,19 @@ import requests
 import yfinance as yf
 
 # ==========================================
-# 1. CONFIGURACIÓN DE TELEGRAM
+# CONFIGURACIÓN DE TELEGRAM
+# GitHub Actions leerá los datos desde Variables Secretas (Secrets)
 # ==========================================
-TELEGRAM_TOKEN = "7826119341:AAE56SlDtp1GBEpO6yMyynjNDhBrR8JAxRM"
-TELEGRAM_CHAT_ID = "5892087866"
+TELEGRAM_TOKEN = os.getenv("7826119341:AAE56SlDtp1GBEpO6yMyynjNDhBrR8JAxRM")
+TELEGRAM_CHAT_ID = os.getenv("5892087866")
 
 
 def enviar_mensaje_telegram(mensaje):
     """Envía un mensaje directo a tu celular a través del Bot de Telegram."""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ ERROR: No se encontraron las variables TELEGRAM_TOKEN o TELEGRAM_CHAT_ID")
+        return
+
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -21,9 +26,7 @@ def enviar_mensaje_telegram(mensaje):
         "parse_mode": "Markdown",
     }
     try:
-        response = requests.post(url, data=payload, timeout=10)
-        if response.status_code != 200:
-            print(f"⚠️ Error en respuesta de Telegram: {response.text}")
+        requests.post(url, data=payload, timeout=10)
     except Exception as e:
         print(f"⚠️ Error al conectar con Telegram: {e}")
 
@@ -56,13 +59,13 @@ def escanear_crypto_15m(lista_tickers):
     hora_actual = time.strftime("%H:%M:%S")
     print(f"[{hora_actual}] 🔍 Escaneando mercado (Velas 15m)...")
 
-    dentro_comprado = []
-    fuera_vendido = []
-    alertas_nuevas = []
+    comprar_ya = []
+    vender_ya = []
+    mantener = []
+    esperar_fuera = []
 
     for ticker in lista_tickers:
         try:
-            # Descargar datos de 15 minutos (5 días)
             df = yf.download(
                 ticker, period="5d", interval="15m", progress=False
             )
@@ -84,7 +87,6 @@ def escanear_crypto_15m(lista_tickers):
             df["Volumen_SMA"] = df["Volume"].rolling(window=10).mean()
             df["Volumen_Fuerte"] = df["Volume"] >= (df["Volumen_SMA"] * 0.9)
 
-            # Evaluar penúltima (-2) y última vela (-1)
             rapida_h, rapida_a = (
                 df["LR_Rapida"].iloc[-1],
                 df["LR_Rapida"].iloc[-2],
@@ -93,65 +95,49 @@ def escanear_crypto_15m(lista_tickers):
             precio_h = df["Close"].iloc[-1]
             vol_f = df["Volumen_Fuerte"].iloc[-1]
 
-            # Detección de cruce fresco en la vela actual
             cruce_compra = (rapida_a <= lenta_a and rapida_h > lenta_h) and vol_f
             cruce_venta = rapida_a >= lenta_a and rapida_h < lenta_h
-
-            # Determinar estado actual (Si la rápida está sobre la lenta = Tendencia Alcista/Comprado)
-            esta_comprado = rapida_h > lenta_h
+            tendencia_alcista = rapida_h > lenta_h
 
             if cruce_compra:
-                alertas_nuevas.append(f"🟢 *¡NUEVO CRUCE DE COMPRA!* en `{ticker}` a `${precio_h:.4f}`")
+                comprar_ya.append(f"• `{ticker}` ➔ Entrada a `${precio_h:.4f}`")
             elif cruce_venta:
-                alertas_nuevas.append(f"🔴 *¡NUEVO CRUCE DE VENTA!* en `{ticker}` a `${precio_h:.4f}`")
-
-            # Clasificación de estado general
-            if esta_comprado:
-                dentro_comprado.append(f"• `{ticker}`: `${precio_h:.4f}`")
+                vender_ya.append(f"• `{ticker}` ➔ Salida a `${precio_h:.4f}`")
+            elif tendencia_alcista:
+                mantener.append(f"• `{ticker}`: `${precio_h:.4f}`")
             else:
-                fuera_vendido.append(f"• `{ticker}`: `${precio_h:.4f}`")
+                esperar_fuera.append(f"• `{ticker}`: `${precio_h:.4f}`")
 
         except Exception as e:
             print(f"  ⚠️ Error en {ticker}: {e}")
 
-    # ==========================================
-    # CONSTRUCCIÓN DEL MENSAJE DE TELEGRAM
-    # ==========================================
-    mensaje_partes = []
+    # Construcción del mensaje para Telegram
+    mensaje_partes = [f"🚨 *ACCIONES RECOMENDADAS ({hora_actual})* 🚨\n"]
 
-    # 1. Si hubo cruce nuevo en esta vela, lo pone arriba en grande
-    if alertas_nuevas:
-        mensaje_partes.append("🚨 *ALERTAS EN LA VELA ACTUAL:*")
-        mensaje_partes.extend(alertas_nuevas)
+    if comprar_ya:
+        mensaje_partes.append("🟢 *¡COMPRAR AHORA (NUEVA ENTRADA)!*")
+        mensaje_partes.extend(comprar_ya)
         mensaje_partes.append("")
 
-    # 2. Resumen del Estado de Mercado
-    mensaje_partes.append(f"📊 *REPORTE DE ESTADO ({hora_actual})*")
-    mensaje_partes.append("----------------------------------")
+    if vender_ya:
+        mensaje_partes.append("🔴 *¡VENDER AHORA (NUEVA SALIDA)!*")
+        mensaje_partes.extend(vender_ya)
+        mensaje_partes.append("")
 
-    mensaje_partes.append("🟢 *ENTRAR / PERMANECER COMPRADO:*")
-    if dentro_comprado:
-        mensaje_partes.extend(dentro_comprado)
-    else:
-        mensaje_partes.append("• _Ninguna moneda en tendencia alcista_")
+    if mantener:
+        mensaje_partes.append("🟢 *MANTENER POSICIÓN (Sigue Alcista):*")
+        mensaje_partes.extend(mantener)
+        mensaje_partes.append("")
 
-    mensaje_partes.append("")
-    mensaje_partes.append("🔴 *SALIR / PERMANECER EN EFECTIVO:*")
-    if fuera_vendido:
-        mensaje_partes.extend(fuera_vendido)
-    else:
-        mensaje_partes.append("• _Ninguna moneda en tendencia bajista_")
+    if esperar_fuera:
+        mensaje_partes.append("⚪ *EN EFECTIVO / ESPERAR FUERA (Sin Señal):*")
+        mensaje_partes.extend(esperar_fuera)
 
     mensaje_final = "\n".join(mensaje_partes)
-
-    # Enviar reporte a Telegram
     enviar_mensaje_telegram(mensaje_final)
-    print("  ✅ Reporte con precios enviado a Telegram correctamente.")
+    print("✅ Reporte ejecutado y enviado a Telegram correctamente.")
 
 
-# ==========================================
-# 2. LISTA DE CRIPTOMONEDAS Y EJECUCIÓN
-# ==========================================
 mis_cryptos = [
     "BTC-USD",
     "ETH-USD",
@@ -162,13 +148,6 @@ mis_cryptos = [
     "AVAX-USD",
 ]
 
-print("🚀 Iniciando servicio de alertas...")
-enviar_mensaje_telegram(
-    "🤖 *Bot de Señales Crypto Activado*\nEl escáner enviará el estado y precio de cada moneda cada 15 minutos."
-)
-
-# Bucle continuo (Revisa cada 15 minutos = 900 segundos)
-while True:
+# Se ejecuta solo una vez cuando GitHub Actions despierta la tarea
+if __name__ == "__main__":
     escanear_crypto_15m(mis_cryptos)
-    print("⏳ Esperando 15 minutos para la siguiente vela...\n")
-    time.sleep(900)
